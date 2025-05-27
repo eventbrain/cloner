@@ -1,6 +1,6 @@
 # Cloner
 A trait for Laravel Eloquent models that lets you clone a model and it's relationships, including spatie/media-library - files.
-
+This is an extensive fork of https://github.com/BKWLD/cloner
 
 ## Installation
 
