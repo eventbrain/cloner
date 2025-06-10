@@ -188,7 +188,7 @@ class Cloner {
 		$cloneProgress = $this->morphClonedBy($model)->first();
 		if(!$cloneProgress) return false;
 
-		return $cloneProgress->modelClone()->is($this->modelClone);
+		return $cloneProgress->modelClone->is($this->modelClone);
 	}
 
 	/**
