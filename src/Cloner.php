@@ -1,7 +1,5 @@
 <?php namespace Eventbrain\Cloner;
 
-// Deps
-
 use Eventbrain\Cloner\Models\ModelClone;
 use Eventbrain\Cloner\Models\ModelCloneProgress;
 use Illuminate\Contracts\Events\Dispatcher as Events;
@@ -97,6 +95,7 @@ class Cloner {
 		//2nd: Check if model has been cloned
 		//Model is source model that has already been cloned; return existing clone
 		$existingModel = $this->fetchExistingClone($model);
+
 		//Model should not be cloned but existing relations be kept
 		if(empty($existingModel) && $this->isCloneExempt($model)) 
 		{
@@ -225,10 +224,11 @@ class Cloner {
 	protected function fetchExistingClone($sourceModel): object|null
 	{
 		$cacheKey = filled($this->modelClone) ? "cloner-{$this->modelClone->id}-{$sourceModel->getTable()}-{$sourceModel->getKey()}" : "cloner-{$sourceModel->getTable()}-{$sourceModel->getKey()}";
-		
+
 		if(Cache::has($cacheKey))
 		{
-			$existingClone = $sourceModel->newQuery()->find(Cache::get($cacheKey));
+			$existingClone = retry(3, fn() => $sourceModel->newQueryWithoutScopes()->findOrFail((int) Cache::get($cacheKey)), 500);
+			
 			if(!$existingClone) return null;
 			return $existingClone;
 		}
@@ -237,12 +237,13 @@ class Cloner {
 		{
 			$cloneProgress = $this->modelClone->modelCloneProgresses()->where([
 				['source_id', "=", $sourceModel->getKey()],
-				['model_type', "=", get_class($sourceModel)]
+				['model_table', "=", $sourceModel->getTable()]
 			])->first();
+
 			if(!$cloneProgress) return null;
 			return $cloneProgress->clone;
 		}
-		
+
 		return null;
 	}
 
@@ -250,11 +251,11 @@ class Cloner {
 	{
 		/*
 		*		TODO: $model/$clone can be of a class that is a pivot without incrementing - how will the clone progress be saved?
-		*
 		*/
 		if(filled($this->modelClone)) {
-			$this->modelClone->modelCloneProgresses()->create([
+			$mcp = $this->modelClone->modelCloneProgresses()->create([
 				"model_type" => get_class($model),
+				"model_table" => $model->getTable(),
 				"source_id" => $model->getKey(),
 				"clone_id" => $clone->getKey()
 			]);
@@ -267,8 +268,8 @@ class Cloner {
 			$cacheKeyClonedBy = "cloner-{$model->getTable()}-{$clone->getKey()}";
 		}
 
-		Cache::put($cacheKeyCloned, $clone->getKey(), now()->addHours(24));
-		Cache::put($cacheKeyClonedBy, $model->getKey(), now()->addHours(24));
+		Cache::tags("eb-cloner")->put($cacheKeyCloned, $clone->getKey(), now()->addHours(24));
+		Cache::tags("eb-cloner")->put($cacheKeyClonedBy, $model->getKey(), now()->addHours(24));
 	}
 
 	/**
@@ -290,6 +291,7 @@ class Cloner {
                 $clonedMedia = $mediaItem->copy($clone, $mediaItem->collection_name, $mediaItem->disk);
 				$this->modelClone->modelCloneProgresses()->create([
 					"model_type" => get_class($clonedMedia),
+					"model_table" => $clonedMedia->getTable(),
 					"source_id" => $mediaItem->getKey(),
 					"clone_id" => $clonedMedia->getKey()
 				]);
@@ -435,7 +437,6 @@ class Cloner {
 	 */
 	protected function duplicateDirectRelation($relation, $relation_name, $clone) {
 		$relation->get()->each(function($foreign) use ($clone, $relation_name) {
-
 			$clonedForeign = $this->duplicate($foreign, $clone->$relation_name());
 
 			if (is_a($clone->$relation_name(), 'Illuminate\Database\Eloquent\Relations\BelongsTo')) {
