@@ -5,7 +5,7 @@ use Eventbrain\Cloner\Models\ModelCloneProgress;
 use Illuminate\Contracts\Events\Dispatcher as Events;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\App;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -119,6 +119,7 @@ class Cloner {
 
 		//uncloned model, do whole cloning process
 		$clone = $this->cloneModel($model);
+		$encounteredRaceCondition = false;
 
 		//TODO if $model/$clone are Pivots && filled($attr), then ->fill($attr)
 		DB::transaction(function () use($clone, $model, $relation, $attr, $recursive) {
@@ -131,8 +132,6 @@ class Cloner {
 				} else {
 					$clone->save();
 				}
-
-				$this->saveCloneProcess($model, $clone);
 			}catch(UniqueConstraintViolationException $e)
 			{
 				Log::error("UniqueConstraintViolationException trying to save model",[
@@ -143,8 +142,49 @@ class Cloner {
 					"attr" => $attr,
 					"e" => $e
 				]);
+
+				throw $e;
+			}
+			
+			try {
+				$this->saveCloneProcess($model, $clone);
+			}catch(UniqueConstraintViolationException $e)
+			{
+				$existing = $this->fetchExistingClone($model);
+				if($existing)
+				{
+					Log::error("Cloner: UniqueConstraintViolationException healed by rerunning fetchExistingClone",[
+						"model" => $model,
+						"existing" => $existing,
+						"clone" => $clone,
+						"relation" => $relation,
+						"recursive" => $recursive,
+						"attr" => $attr,
+						"e" => $e
+					]);
+
+					Model::withoutEvents(function () use ($clone) {
+						$clone->forceDelete();
+					});
+
+					$clone = $existing;
+					$encounteredRaceCondition = true;
+				}else {
+					Log::error("Cloner: UniqueConstraintViolationException could not be healed by rerunning fetchExistingClone",[
+						"model" => $model,
+						"clone" => $clone,
+						"relation" => $relation,
+						"recursive" => $recursive,
+						"attr" => $attr,
+						"e" => $e
+					]);
+
+					throw $e;
+				}
 			}
 		}, 5);
+
+		if($encounteredRaceCondition) return $clone;
 		
 		//ToDo: Queue?
 		$this->cloneRelations($model, $clone);
