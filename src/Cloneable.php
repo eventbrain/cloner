@@ -10,7 +10,29 @@ use Illuminate\Database\Eloquent\Relations\MorphToMany;
  * Mixin accessor methods, callbacks, and the duplicate() helper into models.
  */
 trait Cloneable {
+	
+	/**
+	 * When a cloned model is permanently deleted, remove its clone-progress row.
+	 * The row references the model by id without a database foreign key, so it
+	 * would otherwise be left orphaned.
+	 *
+	 * Only the clone-side row (where this model is the clone) is removed — the
+	 * source model and its mapping are left untouched.
+	 *
+	 * For soft-deletable models the cleanup only runs on a real (force) delete —
+	 * a soft-deleted model may be restored and should keep its clone tracking.
+	 *
+	 * @return void
+	 */
+	public static function bootCloneable() {
+		static::deleted(function ($model) {
+			if (method_exists($model, 'isForceDeleting') && !$model->isForceDeleting()) {
+				return;
+			}
 
+			$model->clonedBy()->delete();
+		});
+	}
 
 	public function modelClones()
 	{
