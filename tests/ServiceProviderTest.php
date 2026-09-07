@@ -20,10 +20,13 @@ class ServiceProviderTest extends TestCase {
 	}
 
 	function testRegister() {
-		$app = m::mock('Illuminate\Foundation\Application')
+		$app = m::mock('Illuminate\Foundation\Application, Illuminate\Contracts\Foundation\CachesConfiguration')
 			->shouldReceive('singleton')->with('cloner', m::any())->once()
 			->getMock()
 		;
+		// register() also merges package config; treat it as already cached so
+		// the merge is skipped instead of reaching for a real config repository.
+		$app->shouldReceive('configurationIsCached')->andReturn(true);
 		$provider = new ServiceProvider($app);
 		$provider->register();
 	}

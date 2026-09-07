@@ -19,6 +19,12 @@ use Illuminate\Support\Facades\DB;
 class Cloner {
 
 	/**
+	 * Cache tag under which clone-progress bookkeeping keys are stored.
+	 * Reads and writes must use the same tag or the fast-path silently misses.
+	 */
+	private const CACHE_TAG = "eb-cloner";
+
+	/**
 	 * @var Events
 	 */
 	private $events;
@@ -225,7 +231,15 @@ class Cloner {
 	{
 		if(empty($this->modelClone)) return false;
 
-		$cloneProgress = $this->morphClonedBy($model)->first();
+		//Bookkeeping lookup: must see the progress row regardless of any global
+		//scope the consumer put on ModelCloneProgress. Do NOT resolve through the
+		//`clone` morphTo either - that would apply the target model's scopes.
+		$cloneProgress = ModelCloneProgress::query()
+			->withoutGlobalScopes()
+			->where('model_type', get_class($model))
+			->where('clone_id', $model->getKey())
+			->first();
+
 		if(!$cloneProgress) return false;
 
 		return $cloneProgress->modelClone->is($this->modelClone);
@@ -265,14 +279,14 @@ class Cloner {
 	{
 		$cacheKey = filled($this->modelClone) ? "cloner-{$this->modelClone->id}-{$sourceModel->getTable()}-{$sourceModel->getKey()}" : "cloner-{$sourceModel->getTable()}-{$sourceModel->getKey()}";
 
-		if(Cache::has($cacheKey))
+		if(Cache::tags(self::CACHE_TAG)->has($cacheKey))
 		{
-			$existingClone = retry(3, fn() => $sourceModel->newQueryWithoutScopes()->findOrFail((int) Cache::get($cacheKey)), 500);
-			
+			$existingClone = retry(3, fn() => $sourceModel->newQueryWithoutScopes()->findOrFail((int) Cache::tags(self::CACHE_TAG)->get($cacheKey)), 500);
+
 			if(!$existingClone) return null;
 			return $existingClone;
 		}
-		
+
 		if(filled($this->modelClone))
 		{
 			$cloneProgress = $this->modelClone->modelCloneProgresses()->where([
@@ -281,7 +295,15 @@ class Cloner {
 			])->first();
 
 			if(!$cloneProgress) return null;
-			return $cloneProgress->clone;
+
+			//Bookkeeping lookup: load the clone row by class + key WITHOUT global
+			//scopes. The plain `->clone` morphTo accessor would apply the target
+			//model's global scopes and can hide a freshly created clone whose
+			//scope context (e.g. a parent-derived team) is not resolvable yet,
+			//which makes the caller re-clone the row forever on a cyclic graph.
+			$cloneClass = $cloneProgress->model_type;
+
+			return (new $cloneClass)->newQueryWithoutScopes()->find($cloneProgress->clone_id);
 		}
 
 		return null;
@@ -308,8 +330,8 @@ class Cloner {
 			$cacheKeyClonedBy = "cloner-{$model->getTable()}-{$clone->getKey()}";
 		}
 
-		Cache::tags("eb-cloner")->put($cacheKeyCloned, $clone->getKey(), now()->addHours(24));
-		Cache::tags("eb-cloner")->put($cacheKeyClonedBy, $model->getKey(), now()->addHours(24));
+		Cache::tags(self::CACHE_TAG)->put($cacheKeyCloned, $clone->getKey(), now()->addHours(24));
+		Cache::tags(self::CACHE_TAG)->put($cacheKeyClonedBy, $model->getKey(), now()->addHours(24));
 	}
 
 	/**
@@ -492,10 +514,5 @@ class Cloner {
 	private function morphModelClones($model)
 	{
 		return $model->morphMany(related: ModelCloneProgress::class, name: 'source', type: 'model_type', id: 'source_id');
-	}
-
-	private function morphClonedBy($model)
-	{
-		return $model->morphOne(related: ModelCloneProgress::class, name: 'clone', type: 'model_type', id: 'clone_id');	
 	}
 }

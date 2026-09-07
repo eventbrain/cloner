@@ -118,8 +118,11 @@ trait Cloneable {
 		$relations = $this->getCloneableRelations();
 		if (in_array($relation, $relations)) return;
 		$relations[] = $relation;
+		// Assign the property directly so stubs/models that declare
+		// `cloneable_relations` as a plain property (not an Eloquent attribute)
+		// still see the addition; keep setAttribute for models that rely on it.
+		$this->cloneable_relations = $relations;
 		$this->setAttribute('cloneable_relations', $relations);
-		//$this->cloneable_relations = $relations;
 	}
 
 	/**
